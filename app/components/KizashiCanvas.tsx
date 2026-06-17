@@ -1617,7 +1617,14 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
     uniforms.uRimGate.value = uniforms.uRimAmp.value
     // Brain spreads particles over a surface (not dense edges) → bump point
     // size on scene 4 so density lifts it above the bloom threshold
-    uniforms.uSizeBoost.value = THREE.MathUtils.lerp(uniforms.uSizeBoost.value, m.scene === 4 ? 1.3 : m.scene === 3 ? 1.32 : 1, 0.05)
+    const sizeTarget = m.scene === 4 ? 1.3
+      : m.scene === 3 ? (IS_MOBILE ? 1.8 : 1.32)
+      : m.scene === 2 ? (IS_MOBILE ? 1.7 : 1)
+      : 1
+    uniforms.uSizeBoost.value = THREE.MathUtils.lerp(uniforms.uSizeBoost.value, sizeTarget, 0.05)
+    // Mobile: the far/wide scenes 2 (platform) & 3 (Earth) are pulled back small
+    // and read too dark — lift their exposure hard; other scenes only mildly.
+    uniforms.uExposure.value = IS_MOBILE ? ((m.scene === 2 || m.scene === 3) ? 2.4 : 1.2) : 1.0
     // Scene 0: dreamy golden shimmer drifting across the 兆
     uniforms.uKanjiGlow.value = THREE.MathUtils.lerp(uniforms.uKanjiGlow.value, ready && m.scene === 0 ? 1 : 0, 0.04)
     uniforms.uHelixGlow.value = THREE.MathUtils.lerp(uniforms.uHelixGlow.value, ready && m.scene === 3 ? 1 : 0, 0.04)
@@ -1826,6 +1833,9 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
     // frame the same horizontal extent. Wide screens (aspect ≥ 1.15) unchanged.
     const aspect = state.size.width / Math.max(1, state.size.height)
     camZ *= Math.min(2.4, Math.max(1, 1.15 / aspect))
+    // Mobile: pull the far scenes 2 & 3 closer so they're not a tiny dim speck
+    // (edges of the wide ring/platform may crop slightly — acceptable).
+    if (IS_MOBILE && (m.scene === 2 || m.scene === 3)) camZ *= 0.76
     const px = state.pointer.x * 0.45
     const py = camY + state.pointer.y * 0.3
     camera.position.x = THREE.MathUtils.lerp(camera.position.x, px, 0.03)
