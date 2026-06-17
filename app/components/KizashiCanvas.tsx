@@ -827,6 +827,7 @@ uniform float uOpacity;
 uniform float uWaveAmp;
 uniform float uRimGate;
 uniform float uEarthCol;
+uniform float uExposure;
 varying vec3 vRand;
 varying vec3 vColor;
 varying float vFade;
@@ -876,7 +877,7 @@ void main() {
   // Scene 4 (uRimGate→1) lifts overall brightness: surface particles are
   // sparser than the wireframe scenes, so they need more luminance to read
   float sceneBright = 1.0 + uRimGate * 0.55;
-  float a = alpha * uOpacity * sceneBright * (tw + vSweep + vFire + vScan + boost + vRim * 3.2 + vRipple * 1.6 + vAura * 2.2 + vGlow * 0.7 + vMoonMask * (0.35 + vMoonLit * 0.9 + vMoonRim * 0.9)) * fade;
+  float a = alpha * uOpacity * sceneBright * uExposure * (tw + vSweep + vFire + vScan + boost + vRim * 3.2 + vRipple * 1.6 + vAura * 2.2 + vGlow * 0.7 + vMoonMask * (0.35 + vMoonLit * 0.9 + vMoonRim * 0.9)) * fade;
   gl_FragColor = vec4(col, min(1.0, a));
 }
 `
@@ -907,7 +908,8 @@ const MODULE_UNIFORMS = {
   uStagger: { value: 0.6 },
   uEaseMode: { value: 0 },
   uNoiseAmp: { value: 0.05 },
-  uSize: { value: 0.030 * (typeof window !== "undefined" ? Math.min(window.devicePixelRatio, 2) : 1) },
+  uSize: { value: 0.030 * (typeof window !== "undefined" ? Math.min(window.devicePixelRatio, 2) : 1) * (IS_MOBILE ? 1.5 : 1) },
+  uExposure: { value: IS_MOBILE ? 1.4 : 1.0 }, // lift brightness on mobile (fewer/smaller particles); clamped so bright scenes don't blow out
   uOpacity: { value: 0.9 },
   uSweepAmp: { value: 0 },
   uSweepPos: { value: -4 },
