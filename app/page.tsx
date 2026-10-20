@@ -56,11 +56,11 @@ export default function Home() {
     const param = url.searchParams.get("scene")
     const initial = param !== null && /^\d+$/.test(param) ? Number(param) : 0
     const valid = initial >= 0 && initial < SCENES.length ? initial : 0
-    const device = navigator as Navigator & { deviceMemory?: number; connection?: { saveData?: boolean } }
+    // Lite is opt-in (or a data-saver request). Hardware hints are no guide here:
+    // iOS Safari under-reports cores, which put every iPhone in lite mode.
     const savedQuality = window.localStorage.getItem("kizashi-quality")
-    const useLiteMode = savedQuality
-      ? savedQuality === "lite"
-      : Boolean(device.connection?.saveData || (device.deviceMemory && device.deviceMemory <= 4) || navigator.hardwareConcurrency <= 4)
+    const device = navigator as Navigator & { connection?: { saveData?: boolean } }
+    const useLiteMode = savedQuality ? savedQuality === "lite" : Boolean(device.connection?.saveData)
 
     for (const key of Array.from(url.searchParams.keys())) {
       if (key === "scene" || key === "fbclid" || key === "gclid" || key === "dclid" || key === "msclkid" || key.startsWith("utm_")) {
@@ -107,6 +107,13 @@ export default function Home() {
 
   const onReady = useCallback(() => setReady(true), [])
   const onIntroComplete = useCallback(() => setIntroDone(true), [])
+  // The canvas could not hold its frame rate even at the lowest resolution. An
+  // explicit choice of the visitor still wins; otherwise fall back for this visit.
+  const onCanvasDegrade = useCallback(() => {
+    if (window.localStorage.getItem("kizashi-quality")) return
+    setLite(true)
+    trackClarityEvent("quality_mode", { quality: "lite", reason: "auto" })
+  }, [])
   const onCanvasError = useCallback(() => {
     setFallback(true)
     setReady(true)
@@ -233,7 +240,7 @@ export default function Home() {
         <div className="world" aria-hidden="true">
           {initialized && (
             <CanvasBoundary onError={onCanvasError}>
-              <KizashiCanvas started sceneIndex={scene} paused={paused} active={pageActive} quality={lite ? "lite" : "high"} onReady={onReady} onIntroComplete={onIntroComplete} onError={onCanvasError} />
+              <KizashiCanvas started sceneIndex={scene} paused={paused} active={pageActive} quality={lite ? "lite" : "high"} onReady={onReady} onIntroComplete={onIntroComplete} onError={onCanvasError} onDegrade={onCanvasDegrade} />
             </CanvasBoundary>
           )}
           {fallback && <div className="world-fallback">兆</div>}

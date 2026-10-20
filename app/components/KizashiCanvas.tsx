@@ -2,7 +2,7 @@
 
 /* eslint-disable react-hooks/immutability, react-hooks/refs, react-hooks/purity, react-hooks/preserve-manual-memoization -- R3F owns mutable GPU objects outside React's render model. */
 
-import { useRef, useMemo, useEffect } from "react"
+import { useRef, useMemo, useEffect, useState, type ComponentRef, type RefObject } from "react"
 import { Canvas, useFrame, useThree } from "@react-three/fiber"
 import { EffectComposer, Bloom } from "@react-three/postprocessing"
 import * as THREE from "three"
@@ -11,10 +11,17 @@ import { MeshSurfaceSampler } from "three/examples/jsm/math/MeshSurfaceSampler.j
 import { sceneStore } from "./sceneStore"
 
 // Device tier — evaluated once at module load (client-only; this module is
-// dynamically imported with ssr:false). Mobile gets a lighter particle budget,
-// fewer shooting stars and a lower DPR ceiling so the scene stays smooth.
+// dynamically imported with ssr:false). Mobile carries half the particles,
+// drawn larger, and fewer shooting stars.
 const IS_MOBILE = typeof window !== "undefined" && window.innerWidth < 768
 const PARTICLE_COUNT = IS_MOBILE ? 12000 : 24000
+// Particle size in CSS px (before the 300 / depth falloff). The shader scales it
+// by the live render pixel ratio, so resolution changes sharpness, never the look.
+const POINT_SIZE = IS_MOBILE ? 0.0643 : 0.0343
+// Render resolution: the pixel ratio we start at, and the floor ResolutionGovernor
+// may step down to when a device can't hold the frame rate.
+const MAX_DPR = IS_MOBILE ? 2 : 1.75
+const MIN_DPR = 1
 const AMBIENT_RATIO = 0.08
 const FLOOR_Y = -2.5
 
@@ -659,23 +666,19 @@ attribute vec3 aGearCenter; // clockwork: this particle's gear centre
 attribute float aGearSpeed; // clockwork: signed angular speed (0 = not a gear)
 attribute vec3 aColor;      // scene-3 Earth colour (white elsewhere)
 attribute float aAmbient;
-varying float vAmbient;
-varying vec3 vColor;
 uniform float uMoon;        // scene-5 blood-moon gate
 uniform float uShadowX;     // scene-5 eclipse terminator (local x)
-varying float vMoonMask;    // 1 on the moon's disc, 0 elsewhere
-varying float vMoonLit;     // 0 in eclipse shadow, 1 in warm light
-varying float vMoonRim;     // bright band at the terminator
+uniform float uOpacity;
+uniform float uRimGate;
+uniform float uEarthCol;
+uniform float uExposure;
+uniform float uPixelRatio;  // live render pixel ratio
 
-varying vec3 vRand;
-varying float vFade;
-varying float vSweep;
-varying float vFire;
-varying float vScan;
-varying float vRim;
-varying float vRipple;
-varying float vAura;
-varying float vGlow;
+// Every fragment of a point sprite shares one colour and intensity, so shading
+// runs once per particle here; the fragment stage only applies the round falloff.
+varying vec3 vShade;
+varying float vIntensity;
+varying float vAmbient;
 
 vec4 permute(vec4 x){ return mod(((x*34.0)+1.0)*x, 289.0); }
 vec4 taylorInvSqrt(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
@@ -730,8 +733,6 @@ float outQuart(float t) {
 }
 
 void main() {
-  vRand = aRandom;
-  vColor = aColor;
   vAmbient = aAmbient;
 
   float raw = clamp(uProgress * (1.0 + uStagger) - aRandom.x * uStagger, 0.0, 1.0);
@@ -757,17 +758,17 @@ void main() {
 
   // Scene 3: traveling wave + scan line
   p.y += uWaveAmp * sin(p.x * 1.15 - uTime * 1.6) * 0.4;
-  vScan = uWaveAmp * exp(-pow((p.z - uScanZ) * 2.2, 2.0));
+  float scan = uWaveAmp * exp(-pow((p.z - uScanZ) * 2.2, 2.0));
 
   // Scene 4: neural firing (skip the noise entirely when the scene is inactive)
-  vFire = 0.0;
+  float fire = 0.0;
   if (uFireAmp > 0.001) {
-    vFire = uFireAmp * pow(max(snoise(p * 0.7 + vec3(0.0, 0.0, uTime * 0.33)), 0.0), 3.0);
+    fire = uFireAmp * pow(max(snoise(p * 0.7 + vec3(0.0, 0.0, uTime * 0.33)), 0.0), 3.0);
   }
 
   // Scene 1: light sweep
   float sw = dot(p, normalize(vec3(0.65, 1.0, 0.35)));
-  vSweep = uSweepAmp * exp(-pow((sw - uSweepPos) * 2.0, 2.0));
+  float sweep = uSweepAmp * exp(-pow((sw - uSweepPos) * 2.0, 2.0));
 
   // Cursor ripple — concentric brightness waves radiating from the cursor,
   // measured in world space so it tracks the on-screen cursor even while a
@@ -777,7 +778,7 @@ void main() {
   float dM = length(toM);
   float ripFall = exp(-dM * 0.5);
   float ripWave = 0.5 + 0.5 * sin(dM * 5.0 - uTime * 3.5);
-  vRipple = uRippleAmp * ripFall * ripWave;
+  float ripple = uRippleAmp * ripFall * ripWave;
 
   // Magical cursor aura — stardust stirred by a fingertip. Particles near the
   // pointer swirl tangentially, breathe outward and lift toward the viewer.
@@ -793,19 +794,18 @@ void main() {
     wp.xy += rad  * aura * 0.14 * shim;
     wp.z  += aura * (0.45 + 0.3 * shim);
   }
-  vAura = aura;
 
   // Scene 0: dreamy kanji shimmer. Scene 3: a bright pulse of light travelling
   // round the Saturn ring — gated by aGearCenter.y so only the ring lights up,
   // never the central planet.
-  vGlow = uKanjiGlow * (0.5 + 0.5 * sin(wp.y * 1.3 - uTime * 1.1 + wp.x * 0.6))
+  float glow = uKanjiGlow * (0.5 + 0.5 * sin(wp.y * 1.3 - uTime * 1.1 + wp.x * 0.6))
         + uHelixGlow * aGearCenter.y * pow(0.5 + 0.5 * sin(aGearCenter.x * 6.28318 - uTime * 1.4), 3.0) * 1.45;
 
   // Scene 5: blood-moon eclipse (moonC matches MOON_C in genMoon)
   vec2 moonC = vec2(-2.3, 1.2);
-  vMoonMask = uMoon * (1.0 - smoothstep(1.5, 2.1, length(p.xy - moonC)));
-  vMoonLit = smoothstep(uShadowX - 0.35, uShadowX + 0.35, p.x);
-  vMoonRim = exp(-pow((p.x - uShadowX) * 2.2, 2.0));
+  float moonMask = uMoon * (1.0 - smoothstep(1.5, 2.1, length(p.xy - moonC)));
+  float moonLit = smoothstep(uShadowX - 0.35, uShadowX + 0.35, p.x);
+  float moonRim = exp(-pow((p.x - uShadowX) * 2.2, 2.0));
 
   vec4 mv = viewMatrix * vec4(wp, 1.0);
 
@@ -819,73 +819,60 @@ void main() {
     vec3 vdir = normalize(-mv.xyz);
     rim = pow(1.0 - abs(dot(vn, vdir)), 2.2);
   }
-  vRim = uRimAmp * rim;
+  float rimGlow = uRimAmp * rim;
 
   gl_Position = projectionMatrix * mv;
-  gl_PointSize = uSize * uSizeBoost * (0.5 + aRandom.y * 0.9) * (300.0 / -mv.z) * (1.0 + vRim * 0.7 + vAura * 2.0 + vGlow * 0.5);
-  vFade = 1.0 - smoothstep(8.0, 28.0, -mv.z - uDepthOrigin + 8.0);
-}
-`
+  gl_PointSize = uSize * uPixelRatio * uSizeBoost * (0.5 + aRandom.y * 0.9) * (300.0 / -mv.z) * (1.0 + rimGlow * 0.7 + aura * 2.0 + glow * 0.5);
+  float depthFade = 1.0 - smoothstep(8.0, 28.0, -mv.z - uDepthOrigin + 8.0);
 
-const FRAGMENT = /* glsl */ `
-uniform float uTime;
-uniform float uOpacity;
-uniform float uWaveAmp;
-uniform float uRimGate;
-uniform float uEarthCol;
-uniform float uExposure;
-varying vec3 vRand;
-varying vec3 vColor;
-varying float vAmbient;
-varying float vFade;
-varying float vSweep;
-varying float vFire;
-varying float vScan;
-varying float vRim;
-varying float vRipple;
-varying float vAura;
-varying float vGlow;
-varying float vMoonMask;
-varying float vMoonLit;
-varying float vMoonRim;
-
-void main() {
-  vec2 uv = gl_PointCoord - 0.5;
-  float d = length(uv);
-  float alpha = smoothstep(0.5, 0.06, d);
-  float tw = 0.6 + 0.4 * sin(uTime * (0.8 + vRand.z * 2.2) + vRand.x * 6.2831);
+  // ── Shading ──
+  float tw = 0.6 + 0.4 * sin(uTime * (0.8 + aRandom.z * 2.2) + aRandom.x * 6.2831);
   vec3 base = vec3(0.85, 0.85, 0.87);
   vec3 gold = vec3(0.784, 0.671, 0.510);
-  vec3 col = mix(base, gold, step(0.9, vRand.y));
+  vec3 col = mix(base, gold, step(0.9, aRandom.y));
   // Scene 3: paint the Earth with its real texture colour.
-  col = mix(col, vColor, uEarthCol);
-  col += vec3(1.0, 0.95, 0.82) * vSweep;
-  col += vec3(0.75, 0.85, 1.0) * vFire;
-  col += vec3(0.95, 0.85, 0.65) * vScan;
+  col = mix(col, aColor, uEarthCol);
+  col += vec3(1.0, 0.95, 0.82) * sweep;
+  col += vec3(0.75, 0.85, 1.0) * fire;
+  col += vec3(0.95, 0.85, 0.65) * scan;
   // Silhouette particles glow cyan-white on top of the full-brightness body
-  col += vec3(0.82, 0.90, 1.0) * vRim * 1.1;
+  col += vec3(0.82, 0.90, 1.0) * rimGlow * 1.1;
   // Cursor ripple — cool light pulse radiating from the pointer
-  col += vec3(0.70, 0.84, 1.0) * vRipple * 1.5;
+  col += vec3(0.70, 0.84, 1.0) * ripple * 1.5;
   // Magical cursor aura — warm gold bloom + fast twinkle on nearby particles
-  float auraTw = 0.5 + 0.5 * sin(uTime * 7.0 + vRand.x * 6.2831);
-  col += vec3(1.0, 0.84, 0.50) * vAura * (1.4 + auraTw);
+  float auraTw = 0.5 + 0.5 * sin(uTime * 7.0 + aRandom.x * 6.2831);
+  col += vec3(1.0, 0.84, 0.50) * aura * (1.4 + auraTw);
   // Scene 0 dreamy shimmer — soft gold light breathing across the 兆
-  col += vec3(0.96, 0.82, 0.52) * vGlow * 0.55;
+  col += vec3(0.96, 0.82, 0.52) * glow * 0.55;
   // Scene 5 blood moon — deep red in eclipse shadow → warm orange in light,
-  // with a bright copper terminator. vMoonMask isolates the moon's disc.
-  vec3 moonCol = mix(vec3(0.34, 0.02, 0.02), vec3(1.0, 0.16, 0.09), vMoonLit)
-               + vec3(1.0, 0.42, 0.20) * vMoonRim * 0.7;
-  col = mix(col, moonCol, vMoonMask);
+  // with a bright copper terminator. moonMask isolates the moon's disc.
+  vec3 moonCol = mix(vec3(0.34, 0.02, 0.02), vec3(1.0, 0.16, 0.09), moonLit)
+               + vec3(1.0, 0.42, 0.20) * moonRim * 0.7;
+  col = mix(col, moonCol, moonMask);
   // The waveform scene spreads deep into z — lift its depth fade and brightness
-  float fade = max(vFade, uWaveAmp * 0.45);
+  float fade = max(depthFade, uWaveAmp * 0.45);
   float boost = uWaveAmp * 0.5;
   // Atmospheric perspective: distant particles go cooler and dimmer
   col *= mix(vec3(0.62, 0.70, 0.95), vec3(1.0), fade);
   // Scene 4 (uRimGate→1) lifts overall brightness: surface particles are
   // sparser than the wireframe scenes, so they need more luminance to read
   float sceneBright = 1.0 + uRimGate * 0.2;
-  float a = alpha * uOpacity * sceneBright * uExposure * (tw + vSweep + vFire + vScan + boost + vRim * 1.2 + vRipple * 1.6 + vAura * 2.2 + vGlow * 0.7 + vMoonMask * (0.35 + vMoonLit * 0.9 + vMoonRim * 0.9)) * fade;
-  gl_FragColor = vec4(col, min(1.0, a) * mix(1.0, 0.32, vAmbient));
+  vShade = col;
+  vIntensity = uOpacity * sceneBright * uExposure * (tw + sweep + fire + scan + boost + rimGlow * 1.2 + ripple * 1.6 + aura * 2.2 + glow * 0.7 + moonMask * (0.35 + moonLit * 0.9 + moonRim * 0.9)) * fade;
+}
+`
+
+const FRAGMENT = /* glsl */ `
+varying vec3 vShade;
+varying float vIntensity;
+varying float vAmbient;
+
+void main() {
+  float alpha = smoothstep(0.5, 0.06, length(gl_PointCoord - 0.5));
+  gl_FragColor = vec4(vShade, min(1.0, alpha * vIntensity) * mix(1.0, 0.32, vAmbient));
+  // Same rule as three's built-in materials: linear into the composer's buffer,
+  // sRGB when drawn straight to the canvas (lite mode).
+  #include <colorspace_fragment>
 }
 `
 
@@ -916,7 +903,8 @@ const MODULE_UNIFORMS = {
   uStagger: { value: 0.6 },
   uEaseMode: { value: 0 },
   uNoiseAmp: { value: 0.05 },
-  uSize: { value: 0.030 * (typeof window !== "undefined" ? Math.min(window.devicePixelRatio, 2) : 1) * (IS_MOBILE ? 1.5 : 1) },
+  uSize: { value: POINT_SIZE },
+  uPixelRatio: { value: 1 },
   uExposure: { value: IS_MOBILE ? 1.4 : 1.0 }, // lift brightness on mobile (fewer/smaller particles); clamped so bright scenes don't blow out
   uOpacity: { value: 0.9 },
   uSweepAmp: { value: 0 },
@@ -1665,6 +1653,7 @@ function Particles({ started }: { started: boolean }) {
     // Mobile: the far/wide scenes 2 (platform) & 3 (Earth) are pulled back small
     // and read too dark — lift their exposure hard; other scenes only mildly.
     uniforms.uExposure.value = IS_MOBILE ? ((m.scene === 2 || m.scene === 3) ? 2.4 : 1.2) : 1.0
+    uniforms.uPixelRatio.value = state.gl.getPixelRatio()
     // Scene 0: dreamy golden shimmer drifting across the 兆
     uniforms.uKanjiGlow.value = THREE.MathUtils.lerp(uniforms.uKanjiGlow.value, ready && m.scene === 0 ? 1 : 0, 0.04)
     uniforms.uHelixGlow.value = THREE.MathUtils.lerp(uniforms.uHelixGlow.value, ready && m.scene === 3 ? 1 : 0, 0.04)
@@ -1984,13 +1973,83 @@ function SceneLifecycle({ sceneIndex, paused, onReady, onIntroComplete, onError 
   return null
 }
 
+// Lite mode renders at ~30 fps, on display frames so motion stays evenly paced
+// at any refresh rate (the slack keeps jitter from skipping a frame that is due).
+const LITE_FRAME_MS = 1000 / 30 - 4
 function LiteFrameLoop({ enabled, running }: { enabled: boolean; running: boolean }) {
   const { invalidate } = useThree()
   useEffect(() => {
     if (!enabled || !running) return
-    const timer = window.setInterval(invalidate, 1000 / 30)
-    return () => window.clearInterval(timer)
+    let last = -Infinity
+    let id = 0
+    const tick = (now: number) => {
+      if (now - last >= LITE_FRAME_MS) {
+        last = now
+        invalidate()
+      }
+      id = requestAnimationFrame(tick)
+    }
+    id = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(id)
   }, [enabled, invalidate, running])
+  return null
+}
+
+// Adapts the render resolution to what the device sustains. GPU time here is
+// fill-bound (it scales with pixel count, i.e. dpr²), so one slow measurement
+// predicts the ratio that would hold the target. A step that brings no gain means
+// the limit isn't the GPU (e.g. a 30 fps power-saving cap): it is undone and the
+// governor stops. Still slow at the floor, it hands over to lite mode.
+const GOVERNOR_WINDOW = 2 // seconds per measurement
+const GOVERNOR_MIN_FPS = 48
+const GOVERNOR_TARGET_FPS = 60
+type GovernorProps = { dpr: number; running: boolean; onChange: (dpr: number) => void; onExhausted: () => void }
+function ResolutionGovernor({ dpr, running, onChange, onExhausted }: GovernorProps) {
+  const state = useRef({ frames: 0, time: 0, slow: 0, probe: null as { from: number; fps: number } | null, done: false })
+  useFrame((_, delta) => {
+    const g = state.current
+    // Paused settle frames and stalls (tab switch, asset decode) say nothing about steady load
+    if (g.done || !running || delta > 0.25) return
+    g.frames++
+    g.time += delta
+    if (g.time < GOVERNOR_WINDOW) return
+    const fps = g.frames / g.time
+    g.frames = 0
+    g.time = 0
+    if (g.probe) {
+      if (fps < g.probe.fps * 1.1) { onChange(g.probe.from); g.done = true }
+      g.probe = null
+      return
+    }
+    g.slow = fps < GOVERNOR_MIN_FPS ? g.slow + 1 : 0
+    if (g.slow < 2) return
+    g.slow = 0
+    if (dpr <= MIN_DPR) { g.done = true; onExhausted(); return }
+    const fit = dpr * Math.sqrt(fps / GOVERNOR_TARGET_FPS)
+    g.probe = { from: dpr, fps }
+    onChange(Math.round(Math.max(MIN_DPR, Math.min(dpr - 0.25, fit)) * 20) / 20)
+  })
+  return null
+}
+
+// The display's pixel ratio changes with browser zoom or a move to another screen.
+function useDevicePixelRatio() {
+  const [ratio, setRatio] = useState(() => window.devicePixelRatio)
+  useEffect(() => {
+    const query = window.matchMedia(`(resolution: ${ratio}dppx)`)
+    const update = () => setRatio(window.devicePixelRatio)
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [ratio])
+  return ratio
+}
+
+// The composer sizes its buffers from the canvas size only; follow pixel-ratio
+// changes too, or the scene would render into stale-resolution buffers.
+function ComposerResize({ composer }: { composer: RefObject<ComponentRef<typeof EffectComposer> | null> }) {
+  const dpr = useThree((s) => s.viewport.dpr)
+  const size = useThree((s) => s.size)
+  useEffect(() => { composer.current?.setSize(size.width, size.height) }, [composer, dpr, size])
   return null
 }
 
@@ -2003,26 +2062,43 @@ type CanvasProps = {
   onReady: () => void
   onIntroComplete: () => void
   onError: () => void
+  onDegrade: () => void
 }
 
 export default function KizashiCanvas(props: CanvasProps) {
   const lite = props.quality === "lite"
   const running = !props.paused && props.active
+  const deviceRatio = useDevicePixelRatio()
+  // A governed ratio only holds for the display it was measured on.
+  const [governed, setGoverned] = useState<{ device: number; dpr: number } | null>(null)
+  const dpr = governed?.device === deviceRatio ? governed.dpr : Math.min(deviceRatio, MAX_DPR)
+  const composer = useRef<ComponentRef<typeof EffectComposer>>(null)
 
   return (
     <Canvas
       camera={{ position: [0, 0, 11.5], fov: 55 }}
-      gl={{ antialias: false, powerPreference: lite ? "low-power" : "high-performance" }}
-      dpr={lite ? [0.75, 1] : IS_MOBILE ? [1, 1.4] : [1, 1.75]}
+      // Every material is additive with depthWrite off, so no depth buffer
+      gl={{ antialias: false, depth: false, powerPreference: lite ? "low-power" : "high-performance" }}
+      dpr={lite ? MIN_DPR : dpr}
       frameloop={running && !lite ? "always" : "demand"}
       style={{ background: "#060606" }}
     >
       <Particles started={props.started} />
       {!lite && <ShootingStars />}
       <LiteFrameLoop enabled={lite} running={running} />
+      {!lite && (
+        <ResolutionGovernor
+          key={deviceRatio}
+          dpr={dpr}
+          running={running}
+          onChange={(next) => setGoverned({ device: deviceRatio, dpr: next })}
+          onExhausted={props.onDegrade}
+        />
+      )}
       <SceneLifecycle {...props} paused={props.paused || !props.active} />
       {!lite && (
-        <EffectComposer>
+        // Points have soft edges of their own: MSAA would only cost bandwidth.
+        <EffectComposer ref={composer} multisampling={0} depthBuffer={false}>
           <Bloom
             intensity={0.55}
             luminanceThreshold={0.28}
@@ -2032,6 +2108,7 @@ export default function KizashiCanvas(props: CanvasProps) {
           />
         </EffectComposer>
       )}
+      {!lite && <ComposerResize composer={composer} />}
     </Canvas>
   )
 }
