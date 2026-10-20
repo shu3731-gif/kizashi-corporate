@@ -1,36 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Kizashi Inc.
 
-## Getting Started
+Next.js App Router / React Three Fiber / Framer Motion による7シーンのコーポレートサイト。
 
-First, run the development server:
+## ローカル確認
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd ~/Library/Mobile\ Documents/com~apple~CloudDocs/corporate-site
+KIZASHI_BUILD_DIR=.next-astra npm run dev -- --webpack --port 3010
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+[http://localhost:3010](http://localhost:3010) を開きます。検証用キャッシュは `.next-astra/` に分離しています。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- 通常URLではオープニングを再生。
+- `?scene=0` から `?scene=6` で指定シーンを直接表示。
+- スクロール、スワイプ、矢印キー、画面下部のシーン選択で移動。
+- Explore はサービス一覧。Escape で閉じる。
+- 画面右下で動きを一時停止・再生でき、サウンドは初期状態でオフ。
+- OSの「視差効果を減らす」設定ではイントロをスキップし、静止したCGを表示。
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## ビルド
 
-## Learn More
+```bash
+npm run build -- --webpack
+```
 
-To learn more about Next.js, take a look at the following resources:
+生成物は `out/`。静的ホスティングに配置できます。この仕上げ作業では公開先へのデプロイは行っていません。
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 編集箇所
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `app/page.tsx`: 各シーンの文章、ナビゲーション、イントロ制御。
+- `app/components/KizashiCanvas.tsx`: 粒子の造形、シェーダー、カメラ、流れ星。
+- `app/components/sceneStore.ts`: UIと3Dの共有状態。
+- `tokens.css` / `app/globals.css`: 配色、書体、レスポンシブレイアウト。
+- `DESIGN.md`: デザイン方針。
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+問い合わせ先メールアドレスと創業者メッセージは既存コンテンツを使用しています。公開前に実際の窓口・原稿を確認してください。

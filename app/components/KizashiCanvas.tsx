@@ -1,5 +1,7 @@
 "use client"
 
+/* eslint-disable react-hooks/immutability, react-hooks/refs, react-hooks/purity, react-hooks/preserve-manual-memoization -- R3F owns mutable GPU objects outside React's render model. */
+
 import { useRef, useMemo, useEffect } from "react"
 import { Canvas, useFrame, useThree } from "@react-three/fiber"
 import { EffectComposer, Bloom } from "@react-three/postprocessing"
@@ -634,6 +636,7 @@ uniform float uStagger;
 uniform float uEaseMode;
 uniform float uNoiseAmp;
 uniform float uSize;
+uniform float uDepthOrigin;
 uniform float uSweepAmp;
 uniform float uSweepPos;
 uniform float uWaveAmp;
@@ -655,6 +658,8 @@ attribute vec3 aNrm;
 attribute vec3 aGearCenter; // clockwork: this particle's gear centre
 attribute float aGearSpeed; // clockwork: signed angular speed (0 = not a gear)
 attribute vec3 aColor;      // scene-3 Earth colour (white elsewhere)
+attribute float aAmbient;
+varying float vAmbient;
 varying vec3 vColor;
 uniform float uMoon;        // scene-5 blood-moon gate
 uniform float uShadowX;     // scene-5 eclipse terminator (local x)
@@ -727,6 +732,7 @@ float outQuart(float t) {
 void main() {
   vRand = aRandom;
   vColor = aColor;
+  vAmbient = aAmbient;
 
   float raw = clamp(uProgress * (1.0 + uStagger) - aRandom.x * uStagger, 0.0, 1.0);
   float t = uEaseMode < 0.5 ? cubicInOut(raw) : outQuart(raw);
@@ -816,8 +822,8 @@ void main() {
   vRim = uRimAmp * rim;
 
   gl_Position = projectionMatrix * mv;
-  gl_PointSize = uSize * uSizeBoost * (0.5 + aRandom.y * 0.9) * (300.0 / -mv.z) * (1.0 + vRim * 1.4 + vAura * 2.0 + vGlow * 0.5);
-  vFade = smoothstep(17.0, 5.0, -mv.z);
+  gl_PointSize = uSize * uSizeBoost * (0.5 + aRandom.y * 0.9) * (300.0 / -mv.z) * (1.0 + vRim * 0.7 + vAura * 2.0 + vGlow * 0.5);
+  vFade = 1.0 - smoothstep(8.0, 28.0, -mv.z - uDepthOrigin + 8.0);
 }
 `
 
@@ -830,6 +836,7 @@ uniform float uEarthCol;
 uniform float uExposure;
 varying vec3 vRand;
 varying vec3 vColor;
+varying float vAmbient;
 varying float vFade;
 varying float vSweep;
 varying float vFire;
@@ -856,7 +863,7 @@ void main() {
   col += vec3(0.75, 0.85, 1.0) * vFire;
   col += vec3(0.95, 0.85, 0.65) * vScan;
   // Silhouette particles glow cyan-white on top of the full-brightness body
-  col += vec3(0.82, 0.90, 1.0) * vRim * 2.6;
+  col += vec3(0.82, 0.90, 1.0) * vRim * 1.1;
   // Cursor ripple — cool light pulse radiating from the pointer
   col += vec3(0.70, 0.84, 1.0) * vRipple * 1.5;
   // Magical cursor aura — warm gold bloom + fast twinkle on nearby particles
@@ -876,9 +883,9 @@ void main() {
   col *= mix(vec3(0.62, 0.70, 0.95), vec3(1.0), fade);
   // Scene 4 (uRimGate→1) lifts overall brightness: surface particles are
   // sparser than the wireframe scenes, so they need more luminance to read
-  float sceneBright = 1.0 + uRimGate * 0.55;
-  float a = alpha * uOpacity * sceneBright * uExposure * (tw + vSweep + vFire + vScan + boost + vRim * 3.2 + vRipple * 1.6 + vAura * 2.2 + vGlow * 0.7 + vMoonMask * (0.35 + vMoonLit * 0.9 + vMoonRim * 0.9)) * fade;
-  gl_FragColor = vec4(col, min(1.0, a));
+  float sceneBright = 1.0 + uRimGate * 0.2;
+  float a = alpha * uOpacity * sceneBright * uExposure * (tw + vSweep + vFire + vScan + boost + vRim * 1.2 + vRipple * 1.6 + vAura * 2.2 + vGlow * 0.7 + vMoonMask * (0.35 + vMoonLit * 0.9 + vMoonRim * 0.9)) * fade;
+  gl_FragColor = vec4(col, min(1.0, a) * mix(1.0, 0.32, vAmbient));
 }
 `
 
@@ -904,6 +911,7 @@ const CAMERA = [
 
 const MODULE_UNIFORMS = {
   uTime: { value: 0 },
+  uDepthOrigin: { value: 6.2 },
   uProgress: { value: 0 },
   uStagger: { value: 0.6 },
   uEaseMode: { value: 0 },
@@ -941,6 +949,7 @@ const STAR_COUNT = IS_MOBILE ? 3 : 6
 const TRAIL = 26
 
 function ShootingStars() {
+  "use no memo"
   const stars = useMemo(() =>
     Array.from({ length: STAR_COUNT }, () => ({
       active: false,
@@ -962,6 +971,8 @@ function ShootingStars() {
   }, [])
 
   useFrame((_, delta) => {
+    if (sceneStore.paused) return
+    delta = Math.min(delta, 0.05)
     const posAttr = geometry.getAttribute("position") as THREE.BufferAttribute
     const colAttr = geometry.getAttribute("color") as THREE.BufferAttribute
     const pos = posAttr.array as Float32Array
@@ -1169,8 +1180,9 @@ function genOrbit(radius: number): Float32Array {
 // ─────────────────────────────────────────────────────────────────────────────
 // Particles + particle environments
 // ─────────────────────────────────────────────────────────────────────────────
-function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boolean }) {
-  const { camera } = useThree()
+function Particles({ started }: { started: boolean }) {
+  "use no memo"
+  const { camera, invalidate } = useThree()
   const pointsRef = useRef<THREE.Points>(null!)
   const ring1Ref = useRef<THREE.Mesh>(null!)
   const ring2Ref = useRef<THREE.Mesh>(null!)
@@ -1263,6 +1275,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
         if (m.introPhase === 3 && m.scene === 4) {
           geometry.userData.appliedScene = -1 // force re-apply on next frame
         }
+        invalidate()
       },
       undefined,
       () => { /* keep procedural fallback on failure */ },
@@ -1335,6 +1348,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
       aColor.needsUpdate = true
       const m = morph.current
       if (m.introPhase === 3 && m.scene === 3) geometry.userData.appliedScene = -1
+      invalidate()
     }
     img.src = "/textures/earth.jpg"
     return () => { cancelled = true }
@@ -1364,6 +1378,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
         aFrom.needsUpdate = true
         aTo.needsUpdate = true
       }
+      invalidate()
     }).catch(() => { /* keep serif fallback */ })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1394,6 +1409,9 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
     geo.setAttribute("aGearCenter", new THREE.BufferAttribute(saturn.centers, 3))
     geo.setAttribute("aGearSpeed", new THREE.BufferAttribute(saturn.speeds, 1))
     geo.setAttribute("aColor", new THREE.BufferAttribute(earthColors, 3))
+    const ambient = new Float32Array(PARTICLE_COUNT)
+    ambient.fill(1, PARTICLE_COUNT - Math.floor(PARTICLE_COUNT * AMBIENT_RATIO))
+    geo.setAttribute("aAmbient", new THREE.BufferAttribute(ambient, 1))
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 30)
     return geo
   }, [introShapes, randoms, brainFallback, saturn, earthColors])
@@ -1401,15 +1419,15 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
   // Module-stable uniforms + imperative material: R3F clones uniforms passed
   // through JSX props, so the GPU would otherwise animate a stale copy while
   // we update ours. Constructing the material ourselves guarantees identity.
-  const uniforms = MODULE_UNIFORMS
+  const uniforms = useMemo(() => THREE.UniformsUtils.clone(MODULE_UNIFORMS), [])
   const material = useMemo(() => new THREE.ShaderMaterial({
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
-    uniforms: MODULE_UNIFORMS,
+    uniforms,
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
-  }), [])
+  }), [uniforms])
 
   const morph = useRef({
     progress: 1,
@@ -1430,6 +1448,8 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
   const eclipseT = useRef(0) // scene-5 eclipse progress (0 = shadowed, 1 = emerged)
 
   const tmpVec = useMemo(() => new THREE.Vector3(), [])
+  const animationTime = useRef(0)
+  const framing = useRef({ x: 0, y: 0 })
 
   // Cursor ripple tracking (brightness only — never moves particles)
   const mousePlane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), [])
@@ -1489,7 +1509,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
     if (!started || m.introPhase !== -1) return
     // Deep-link / verification shortcut: snap straight to the target scene with
     // no intro animation. Normal visitors (no ?scene= param) never hit this.
-    if (skipIntro) {
+    if (sceneStore.skipIntro) {
       const s = sceneStore.index
       m.introPhase = 3
       m.progress = 1
@@ -1505,6 +1525,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
       uniforms.uProgress.value = 1
       geometry.userData.appliedScene = s
       camera.position.z = CAMERA[s].z
+      sceneStore.introComplete = true
       return
     }
     m.introPhase = 0
@@ -1514,9 +1535,22 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
   }, [started])
 
   useFrame((state, delta) => {
+    delta = Math.min(delta, 0.05)
     const m = morph.current
-    const time = state.clock.elapsedTime
+    const motionDelta = sceneStore.paused ? 0 : delta
+    animationTime.current += motionDelta
+    const time = animationTime.current
     uniforms.uTime.value = time
+    uniforms.uDepthOrigin.value = camera.position.length()
+
+    // An explicit skip or reduced-motion preference bypasses every intro phase.
+    if (sceneStore.skipIntro && m.introPhase < 3) {
+      m.introPhase = 3
+      m.snapped = true
+      m.dissolve = 1
+      m.rotX = 0; m.rotY = 0; m.rotZ = 0
+      geometry.userData.appliedScene = -1
+    }
 
     if (m.introPhase !== -1 && m.progress < 1) {
       m.progress = Math.min(1, m.progress + delta / m.dur)
@@ -1563,10 +1597,16 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
       geometry.userData.appliedScene = sceneStore.index
       retarget(targetsRef.current[m.scene], 1.1, "cubic", 0.3)
     }
+    if (m.introPhase === 3) sceneStore.introComplete = true
+    if (sceneStore.paused) { m.progress = 1; uniforms.uProgress.value = 1 }
 
     // Intro shockwaves
-    if (m.introPhase >= 0 && m.burstStartTime < 0) m.burstStartTime = time
-    if (ring1Ref.current && ring2Ref.current && m.burstStartTime >= 0) {
+    if (m.introPhase === 0 && m.burstStartTime < 0) m.burstStartTime = time
+    if (sceneStore.skipIntro) {
+      if (ring1Ref.current) ring1Ref.current.visible = false
+      if (ring2Ref.current) ring2Ref.current.visible = false
+    }
+    if (!sceneStore.skipIntro && ring1Ref.current && ring2Ref.current && m.burstStartTime >= 0) {
       const e1 = (time - m.burstStartTime) / 1.5
       const e2 = (time - m.burstStartTime - 0.18) / 1.7
       const r1 = ring1Ref.current, r2 = ring2Ref.current
@@ -1617,7 +1657,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
     uniforms.uRimGate.value = uniforms.uRimAmp.value
     // Brain spreads particles over a surface (not dense edges) → bump point
     // size on scene 4 so density lifts it above the bloom threshold
-    const sizeTarget = m.scene === 4 ? 1.3
+    const sizeTarget = m.scene === 4 ? 1.05
       : m.scene === 3 ? (IS_MOBILE ? 1.8 : 1.32)
       : m.scene === 2 ? (IS_MOBILE ? 1.7 : 1)
       : 1
@@ -1631,19 +1671,19 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
     uniforms.uEarthCol.value = THREE.MathUtils.lerp(uniforms.uEarthCol.value, ready && m.scene === 3 ? 1 : 0, 0.06)
     // Scene 5: blood moon — fade in, and sweep the eclipse terminator across so
     // the moon emerges from shadow over ~7s.
-    eclipseT.current = ready && m.scene === 5 ? Math.min(1, eclipseT.current + delta / 7) : 0
+    eclipseT.current = ready && m.scene === 5 ? (sceneStore.reducedMotion ? 1 : Math.min(1, eclipseT.current + motionDelta / 7)) : 0
     uniforms.uMoon.value = THREE.MathUtils.lerp(uniforms.uMoon.value, ready && m.scene === 5 ? 1 : 0, 0.05)
     uniforms.uShadowX.value = THREE.MathUtils.lerp(MOON_C[0] + MOON_R + 0.6, MOON_C[0] - MOON_R - 0.6, eclipseT.current)
 
     // Clockwork time advances only on the gear scene (once settled), so the
     // gears spin up from rest and the morph in/out is never distorted
-    if (ready && m.scene === 3) uniforms.uClockTime.value += delta
+    if (ready && m.scene === 3) uniforms.uClockTime.value += motionDelta
     else uniforms.uClockTime.value = 0
 
     // Cursor ripple: project the pointer onto the z=0 world plane and feed it
     // to the shader as a brightness source. Ramps in only after a real move
     // (so the phantom (0,0) cursor doesn't pulse the glyph centre on load).
-    if (pointerMoved.current) {
+    if (pointerMoved.current && !sceneStore.paused) {
       state.raycaster.setFromCamera(state.pointer, camera)
       if (state.raycaster.ray.intersectPlane(mousePlane, mouseWorld)) {
         uniforms.uMouse.value.copy(mouseWorld)
@@ -1659,7 +1699,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
     // Rotation
     const g = pointsRef.current
     if (m.introPhase === 1) {
-      m.rotZ += delta * 1.15
+      m.rotZ += motionDelta * 1.15
       m.rotY = THREE.MathUtils.damp(m.rotY, 0, 2.5, delta)
       m.rotX = THREE.MathUtils.damp(m.rotX, -0.12, 2.5, delta)
     } else if (m.introPhase === 2 || (m.introPhase === 3 && m.scene === 0)) {
@@ -1672,18 +1712,18 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
       m.rotZ = THREE.MathUtils.damp(m.rotZ, 0, 2.2, delta)
       switch (m.scene) {
         case 1:
-          m.rotY += delta * 0.12
+          m.rotY += motionDelta * 0.12
           m.rotX = THREE.MathUtils.damp(m.rotX, Math.sin(time * 0.05) * 0.08, 2, delta)
           break
         case 2:
           // City of light: slow aerial orbit, fixed downward tilt to read depth
-          m.rotY += delta * 0.05
+          m.rotY += motionDelta * 0.05
           m.rotX = THREE.MathUtils.damp(m.rotX, 0.62, 2, delta)
           break
         case 3:
           // Saturn: planet + horizontal DNA ring, viewed from slightly above so
           // the ring reads as a shallow ellipse; the whole system turns slowly.
-          m.rotY += delta * 0.12
+          m.rotY += motionDelta * 0.12
           m.rotX = THREE.MathUtils.damp(m.rotX, 0.36, 2, delta)
           break
         case 4:
@@ -1697,7 +1737,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
           m.rotX = THREE.MathUtils.damp(m.rotX, 0, 2.5, delta)
           break
         case 6:
-          m.rotY += delta * 0.3
+          m.rotY += motionDelta * 0.10
           m.rotX = THREE.MathUtils.damp(m.rotX, 0.1, 2, delta)
           break
       }
@@ -1752,7 +1792,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
       const dustAttr = dustGeo.getAttribute("position") as THREE.BufferAttribute
       const da = dustAttr.array as Float32Array
       for (let i = 0; i < COLUMN_DUST; i++) {
-        da[i * 3 + 1] += delta * (0.1 + (i % 7) * 0.02)
+        da[i * 3 + 1] += motionDelta * (0.1 + (i % 7) * 0.02)
         if (da[i * 3 + 1] > FLOOR_Y + 6) da[i * 3 + 1] = FLOOR_Y + 0.1
       }
       dustAttr.needsUpdate = true
@@ -1803,7 +1843,7 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
           let dAng = Math.abs(a - (satAngle % (Math.PI * 2)))
           if (dAng > Math.PI) dAng = Math.PI * 2 - dAng
           const sat = Math.exp(-dAng * dAng * 60) * 1.2
-          const b = (baseB + sat) * lv[4]
+          const b = (baseB + sat) * lv[5]
           if (goldRing) { ca[j * 3] = b * 0.95; ca[j * 3 + 1] = b * 0.8; ca[j * 3 + 2] = b * 0.58 }
           else { ca[j * 3] = b; ca[j * 3 + 1] = b; ca[j * 3 + 2] = b * 1.02 }
         }
@@ -1836,12 +1876,29 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
     // Mobile: pull the far scenes 2 & 3 closer so they're not a tiny dim speck
     // (edges of the wide ring/platform may crop slightly — acceptable).
     if (IS_MOBILE && (m.scene === 2 || m.scene === 3)) camZ *= 0.76
-    const px = state.pointer.x * 0.45
-    const py = camY + state.pointer.y * 0.3
-    camera.position.x = THREE.MathUtils.lerp(camera.position.x, px, 0.03)
-    camera.position.y = THREE.MathUtils.lerp(camera.position.y, py, 0.03)
-    camera.position.z = THREE.MathUtils.lerp(camera.position.z, camZ, 0.022)
+    const portrait = state.size.width <= 900 && aspect < 1.4
+    const shortPortrait = portrait && state.size.height < 740
+    if (shortPortrait) camZ *= [1, 1.12, 1.12, 1.3, 1.15, 1, 1.15][m.scene]
+    const cameraEase = sceneStore.reducedMotion ? 1000 : 3
+    const px = sceneStore.paused ? 0 : state.pointer.x * 0.28
+    const py = camY + (sceneStore.paused ? 0 : state.pointer.y * 0.18)
+    camera.position.x = THREE.MathUtils.damp(camera.position.x, px, cameraEase, delta)
+    camera.position.y = THREE.MathUtils.damp(camera.position.y, py, cameraEase, delta)
+    camera.position.z = THREE.MathUtils.damp(camera.position.z, camZ, cameraEase, delta)
     camera.lookAt(0, 0, 0)
+
+    // Compose in screen space: full-bleed CG stays clear of the reading column.
+    const composed = m.introPhase === 3
+    const offsetX = !composed ? 0 : portrait ? (m.scene === 5 ? -0.27 : 0) : m.scene === 5 ? 0 : -0.18
+    const portraitY = (m.scene === 5 ? 0.20 : m.scene === 2 ? 0.33 : 0.235)
+      + (shortPortrait ? [0, 0.095, 0.03, 0.04, 0.025, 0, 0.025][m.scene] : 0)
+    const offsetY = !composed ? 0 : portrait ? portraitY : m.scene === 2 ? 0.12 : 0
+    framing.current.x = THREE.MathUtils.damp(framing.current.x, offsetX, cameraEase, delta)
+    framing.current.y = THREE.MathUtils.damp(framing.current.y, offsetY, cameraEase, delta)
+    const perspective = camera as THREE.PerspectiveCamera
+    perspective.setViewOffset(state.size.width, state.size.height,
+      state.size.width * framing.current.x, state.size.height * framing.current.y,
+      state.size.width, state.size.height)
   })
 
   return (
@@ -1902,25 +1959,79 @@ function Particles({ started, skipIntro }: { started: boolean; skipIntro?: boole
 // ─────────────────────────────────────────────────────────────────────────────
 // Export
 // ─────────────────────────────────────────────────────────────────────────────
-export default function KizashiCanvas({ started, skipIntro }: { sceneIndex?: number; started: boolean; skipIntro?: boolean }) {
+function SceneLifecycle({ sceneIndex, paused, onReady, onIntroComplete, onError }: CanvasProps) {
+  const { invalidate, gl } = useThree()
+  const reported = useRef(false)
+  const completed = useRef(false)
+  const settleFrames = useRef(120)
+  useEffect(() => {
+    settleFrames.current = 120
+    invalidate()
+  }, [sceneIndex, paused, invalidate])
+  useEffect(() => {
+    const lost = (event: Event) => { event.preventDefault(); onError() }
+    gl.domElement.addEventListener("webglcontextlost", lost)
+    return () => gl.domElement.removeEventListener("webglcontextlost", lost)
+  }, [gl, onError])
+  useFrame(() => {
+    if (!reported.current) { reported.current = true; queueMicrotask(onReady) }
+    if (sceneStore.introComplete && !completed.current) {
+      completed.current = true
+      queueMicrotask(onIntroComplete)
+    }
+    if (paused && settleFrames.current-- > 0) invalidate()
+  })
+  return null
+}
+
+function LiteFrameLoop({ enabled, running }: { enabled: boolean; running: boolean }) {
+  const { invalidate } = useThree()
+  useEffect(() => {
+    if (!enabled || !running) return
+    const timer = window.setInterval(invalidate, 1000 / 30)
+    return () => window.clearInterval(timer)
+  }, [enabled, invalidate, running])
+  return null
+}
+
+type CanvasProps = {
+  started: boolean
+  sceneIndex: number
+  paused: boolean
+  active: boolean
+  quality: "high" | "lite"
+  onReady: () => void
+  onIntroComplete: () => void
+  onError: () => void
+}
+
+export default function KizashiCanvas(props: CanvasProps) {
+  const lite = props.quality === "lite"
+  const running = !props.paused && props.active
+
   return (
     <Canvas
       camera={{ position: [0, 0, 11.5], fov: 55 }}
-      gl={{ antialias: false, powerPreference: "high-performance" }}
-      dpr={IS_MOBILE ? [1, 1.4] : [1, 1.75]}
+      gl={{ antialias: false, powerPreference: lite ? "low-power" : "high-performance" }}
+      dpr={lite ? [0.75, 1] : IS_MOBILE ? [1, 1.4] : [1, 1.75]}
+      frameloop={running && !lite ? "always" : "demand"}
       style={{ background: "#060606" }}
     >
-      <Particles started={started} skipIntro={skipIntro} />
-      <ShootingStars />
-      <EffectComposer>
-        <Bloom
-          intensity={0.55}
-          luminanceThreshold={0.28}
-          luminanceSmoothing={0.5}
-          mipmapBlur
-          radius={0.65}
-        />
-      </EffectComposer>
+      <Particles started={props.started} />
+      {!lite && <ShootingStars />}
+      <LiteFrameLoop enabled={lite} running={running} />
+      <SceneLifecycle {...props} paused={props.paused || !props.active} />
+      {!lite && (
+        <EffectComposer>
+          <Bloom
+            intensity={0.55}
+            luminanceThreshold={0.28}
+            luminanceSmoothing={0.5}
+            mipmapBlur
+            radius={0.65}
+          />
+        </EffectComposer>
+      )}
     </Canvas>
   )
 }

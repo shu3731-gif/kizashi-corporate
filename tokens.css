@@ -1,0 +1,27 @@
+:root {
+  --color-paper: #060606;
+  --color-surface: #111111;
+  --color-ink: #f5f5f3;
+  --color-muted: #a0a5b1;
+  --color-accent: #c8ab82;
+  --color-rule: #353535;
+  --color-focus: #f1cf9f;
+  --color-overlay: rgb(6 6 6 / 96%);
+  --font-display: var(--font-geist-sans), "Hiragino Kaku Gothic ProN", sans-serif;
+  --font-body: var(--font-geist-sans), "Hiragino Kaku Gothic ProN", sans-serif;
+  --font-label: var(--font-geist-mono), monospace;
+  --font-signature: "Yuji Mai", serif;
+  --space-xs: 8px;
+  --space-sm: 16px;
+  --space-md: 24px;
+  --space-lg: 32px;
+  --space-xl: 48px;
+  --space-2xl: 64px;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-body: 15px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-short: 220ms;
+  --radius-card: 4px;
+}

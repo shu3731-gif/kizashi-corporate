@@ -3,4 +3,8 @@
 // never drift out of sync with the selected scene.
 export const sceneStore = {
   index: 0,
+  skipIntro: false,
+  introComplete: false,
+  paused: false,
+  reducedMotion: false,
 }

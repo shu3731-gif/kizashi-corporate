@@ -5,7 +5,7 @@ Create implementation-ready, token-driven UI guidance for Kizashi Inc. that is o
 
 ## Brand
 - Product/brand: Kizashi Inc.
-- Audience: developers and technical teams
+- Audience: Japanese business owners and teams considering brand, EC, operations, or AI projects
 - Visual inspiration: Igloo Inc. — minimal, architectural, premium
 
 ## Style Foundations
@@ -57,10 +57,22 @@ Create implementation-ready, token-driven UI guidance for Kizashi Inc. that is o
 - Use large, confident typography
 - Use monospace for labels, captions, metadata
 - Let whitespace breathe — never crowd elements
-- Dark hero, light content sections (alternating rhythm)
+- Full-bleed dark 3D chapters with an unframed reading column
 
 ## Rules: Don't
 - No decorative SVG illustrations
 - No busy patterns or textures
 - No low-contrast text
 - No more than 2 typeface families
+
+## Refinement (2026-09-14)
+- Keep the seven current chapters and their CG subjects. Improve framing, hierarchy, and interaction in place.
+- `tokens.css` is the shared palette and type source; `app/globals.css` exposes the Tailwind v4 theme.
+- English display headings are paired with readable Japanese summaries. Use zero letter-spacing.
+- Desktop: reserve the left column for copy and compose CG to the right. Perspective reverses this arrangement.
+- Portrait: compose CG above the text. The scene selector and controls remain reachable at the bottom.
+- Use real loading readiness, not simulated technical logs or invented progress percentages.
+- Intro skip, scene index, keyboard navigation, motion pause, and native modal focus handling are required.
+- Respect reduced-motion preferences. No automatic sound. Stop continuous rendering while motion is paused.
+- Validate all seven scenes, initial load, repeat visits, and widths 320 / 375 / 414 / 768 / 1440.
+- Calligraphic glyphs and the existing founder signatures are artwork exceptions to the two UI font families.
